@@ -633,15 +633,21 @@ def render_dashboard() -> None:
     # -----------------------------------------------------------------------
     if current_status in ("break", "lunch"):
         remaining = compute_remaining(name)
-        if remaining is not None and remaining > 0:
+        if remaining is not None:
             mins, secs = divmod(remaining, 60)
             timer_label = "Break" if current_status == "break" else "Lunch"
+
+            # Determine urgency style
+            is_last_minute = remaining <= 60
+            bg = "#fff3cd" if is_last_minute else "#f0f2f6"
+            border = "2px solid #dc3545" if is_last_minute else "none"
             st.markdown(
                 f"""
                 <div style="
                     text-align: center;
                     padding: 1.5rem;
-                    background: #f0f2f6;
+                    background: {bg};
+                    border: {border};
                     border-radius: 12px;
                     margin: 1rem 0;
                 ">
@@ -657,13 +663,18 @@ def render_dashboard() -> None:
                 unsafe_allow_html=True,
             )
 
-            # Audio alarm 1 minute before end
+            # Show a playable audio player during the last 60 seconds
+            # (user can tap it on mobile — no autoplay needed)
+            if remaining > 0 and remaining <= 60:
+                st.warning("🔊 **Alarm active!** Tap play below or ensure your sound is on.")
+                st.audio(_ALARM_WAV_BYTES, format='audio/wav')
+                # Also try Web Audio API (may work on some mobile browsers)
+                st.components.v1.html(audio_alarm_html(delay_seconds=0), height=0)
+
+            # Also trigger the repeating alarm once at the 1-minute mark
             if should_alarm(name):
-                play_alarm_audio()
-        elif remaining is not None and remaining == 0:
-            # Timer hit zero; auto-reset already happened above via auto_expire_timers
-            st.info("⏰ Your break/lunch has ended. Returning to team status.")
-            st.rerun()
+                st.components.v1.html(audio_alarm_html(delay_seconds=0), height=0)
+
 
     # -----------------------------------------------------------------------
     # Personnel table
