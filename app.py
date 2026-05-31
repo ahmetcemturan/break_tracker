@@ -309,61 +309,90 @@ _ALARM_WAV_BYTES = generate_alarm_wav()
 _ALARM_WAV_B64 = base64.b64encode(_ALARM_WAV_BYTES).decode()
 
 
-def audio_alarm_html(delay_seconds: int = 0) -> str:
+def alarm_js(delay_seconds: int = 0) -> str:
     """
-    Returns HTML/JS that plays a repeating beep alarm using the Web Audio API.
-    Pattern: 1s beep + 1s pause, repeated 5 times (10s total).
-    Falls back to a data-URI WAV audio element.
+    Returns HTML+JS that fires a multi‑layer alarm after *delay_seconds*:
+
+    1. **Browser Notification** (system sound, works with screen off/locked)
+       – Android Chrome/Firefox: works from any tab
+       – iOS: requires PWA added to Home Screen (iOS 16.4+)
+    2. **Web Audio API** oscillator (5× repeating beep, for foreground use)
+    3. **data-URI audio** fallback if Web Audio is unavailable
+
+    The alarm repeats 5 times: 1s beep + 1s pause = 10s total.
     """
     return f"""
+    <div id="_alarm_container"></div>
     <script>
       (function() {{
-        function playBeep(ctx, startTime) {{
-          for (var i = 0; i < 5; i++) {{
-            var osc = ctx.createOscillator();
-            osc.type = 'sine';
-            osc.frequency.value = 880;
-            var gain = ctx.createGain();
-            var t = startTime + i * 2;
-            gain.gain.setValueAtTime(0.3, t);
-            gain.gain.exponentialRampToValueAtTime(0.01, t + 0.9);
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.start(t);
-            osc.stop(t + 0.9);
+        /* ---- request notification permission once ---- */
+        if (!window._alarm_permission_requested) {{
+          window._alarm_permission_requested = true;
+          if ('Notification' in window && Notification.permission === 'default') {{
+            Notification.requestPermission();
           }}
         }}
 
-        setTimeout(function() {{
+        /* ---- play the 5× repeating beep via Web Audio ---- */
+        function playBeeps() {{
           try {{
             var AC = window.AudioContext || window.webkitAudioContext;
-            if (AC) {{
-              var ctx = new AC();
-              if (ctx.state === 'suspended') ctx.resume();
-              playBeep(ctx, ctx.currentTime);
-              return;
+            if (!AC) throw 'No AudioContext';
+            var ctx = new AC();
+            if (ctx.state === 'suspended') ctx.resume();
+            for (var i = 0; i < 5; i++) {{
+              var osc = ctx.createOscillator();
+              osc.type = 'sine';
+              osc.frequency.value = 880;
+              var gain = ctx.createGain();
+              var t = ctx.currentTime + i * 2;
+              gain.gain.setValueAtTime(0.3, t);
+              gain.gain.exponentialRampToValueAtTime(0.01, t + 0.9);
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              osc.start(t);
+              osc.stop(t + 0.9);
             }}
-          }} catch(e) {{
-            console.log('Web Audio failed', e);
+            return;
+          }} catch(e) {{}}
+
+          /* fallback: data-URI audio */
+          try {{
+            var a = new Audio('data:audio/wav;base64,{_ALARM_WAV_B64}');
+            a.volume = 0.5;
+            a.play().catch(function(){{}});
+          }} catch(e2) {{}}
+        }}
+
+        /* ---- fire alarm after delay ---- */
+        setTimeout(function() {{
+          /* 1. System notification (sound guaranteed on Android) */
+          if ('Notification' in window && Notification.permission === 'granted') {{
+            try {{
+              new Notification('⏰ Break Tracker', {{
+                body: 'Break/lunch time is over!',
+                tag: 'break-tracker-alarm',
+                requireInteraction: true,
+              }});
+            }} catch(e) {{}}
           }}
 
-          try {{
-            var audio = new Audio('data:audio/wav;base64,{_ALARM_WAV_B64}');
-            audio.volume = 0.5;
-            audio.play().catch(function() {{}});
-          }} catch(e2) {{
-            console.log('Audio fallback failed', e2);
-          }}
+          /* 2. Web Audio / audio fallback beeps */
+          playBeeps();
         }}, {delay_seconds * 1000});
       }})();
     </script>
     """
 
 
-def play_alarm_audio() -> None:
-    """Play the repeating alarm via visible st.audio player AND Web Audio API."""
+def fire_alarm() -> None:
+    """
+    Fire the alarm using:
+    - A visible st.audio() player (user can tap play on mobile)
+    - The notification + audio JS component (screen-off, background tab)
+    """
     st.audio(_ALARM_WAV_BYTES, format='audio/wav')
-    st.components.v1.html(audio_alarm_html(delay_seconds=0), height=0)
+    st.components.v1.html(alarm_js(delay_seconds=0), height=0)
 
 
 # ---------------------------------------------------------------------------
@@ -666,12 +695,13 @@ def render_dashboard() -> None:
 
             # Show a playable audio player during the last 60 seconds
             if is_last_minute:
-                st.warning("🔊 **Alarm active!** Tap play below.")
-                st.audio(_ALARM_WAV_BYTES, format='audio/wav')
+                # Visible audio player + notification + beeps
+                st.warning("🔊 **Alarm active!**")
+                fire_alarm()
 
-            # Fire the Web Audio API alarm once at the 1-minute mark
+            # Fire alarm once when entering the 1-minute window
             if should_alarm(name):
-                st.components.v1.html(audio_alarm_html(delay_seconds=0), height=0)
+                fire_alarm()
 
     # -----------------------------------------------------------------------
     # Personnel table
@@ -765,7 +795,7 @@ def render_dashboard() -> None:
                 "Put your phone down now and wait for the beep."
             )
             st.components.v1.html(
-                audio_alarm_html(delay_seconds=delay),
+                alarm_js(delay_seconds=delay),
                 height=0,
             )
 
