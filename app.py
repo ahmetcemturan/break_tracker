@@ -255,40 +255,52 @@ def should_alarm(name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def generate_beep_wav(frequency: int = 880, duration_ms: int = 600, volume: float = 0.4) -> bytes:
+def generate_alarm_wav(
+    frequency: int = 880,
+    beep_ms: int = 1000,
+    pause_ms: int = 1000,
+    repeats: int = 5,
+    volume: float = 0.4,
+) -> bytes:
     """
-    Generate a PCM WAV beep tone as raw bytes.
-    No external files needed — the browser can play this directly.
+    Generate a repeating alarm WAV: (1s beep + 1s pause) × 5 = 10s total.
+    No external files needed.
     """
     sample_rate = 44100
-    num_samples = int(sample_rate * duration_ms / 1000)
+    beep_samples = int(sample_rate * beep_ms / 1000)
+    pause_samples = int(sample_rate * pause_ms / 1000)
+    fade_len = int(sample_rate * 0.008)  # 8ms fade (avoids click)
+
     samples = []
-    fade_len = int(sample_rate * 0.008)  # 8ms fade in/out (avoids click)
-    for i in range(num_samples):
-        t = i / sample_rate
-        sample = math.sin(2 * math.pi * frequency * t)
-        # Apply fade envelope
-        env = 1.0
-        if i < fade_len:
-            env = i / fade_len
-        if i > num_samples - fade_len:
-            env = (num_samples - i) / fade_len
-        sample *= env * volume
-        samples.append(struct.pack('<h', int(sample * 32767)))
+    for rep in range(repeats):
+        # Beep
+        for i in range(beep_samples):
+            t = i / sample_rate
+            s = math.sin(2 * math.pi * frequency * t)
+            env = 1.0
+            if i < fade_len:
+                env = i / fade_len
+            if i > beep_samples - fade_len:
+                env = (beep_samples - i) / fade_len
+            s *= env * volume
+            samples.append(struct.pack('<h', int(s * 32767)))
+        # Pause (silence)
+        for _ in range(pause_samples):
+            samples.append(struct.pack('<h', 0))
 
     buf = io.BytesIO()
-    data_size = num_samples * 2  # 16-bit mono
+    data_size = len(samples) * 2
     buf.write(b'RIFF')
     buf.write(struct.pack('<I', 36 + data_size))
     buf.write(b'WAVE')
     buf.write(b'fmt ')
-    buf.write(struct.pack('<I', 16))          # chunk size
-    buf.write(struct.pack('<H', 1))           # PCM
-    buf.write(struct.pack('<H', 1))           # mono
+    buf.write(struct.pack('<I', 16))
+    buf.write(struct.pack('<H', 1))
+    buf.write(struct.pack('<H', 1))
     buf.write(struct.pack('<I', sample_rate))
-    buf.write(struct.pack('<I', sample_rate * 2))  # byte rate
-    buf.write(struct.pack('<H', 2))           # block align
-    buf.write(struct.pack('<H', 16))          # bits per sample
+    buf.write(struct.pack('<I', sample_rate * 2))
+    buf.write(struct.pack('<H', 2))
+    buf.write(struct.pack('<H', 16))
     buf.write(b'data')
     buf.write(struct.pack('<I', data_size))
     for s in samples:
@@ -296,69 +308,70 @@ def generate_beep_wav(frequency: int = 880, duration_ms: int = 600, volume: floa
     return buf.getvalue()
 
 
-_BEEP_WAV_BYTES = generate_beep_wav()
-_BEEP_WAV_B64 = base64.b64encode(_BEEP_WAV_BYTES).decode()
+_ALARM_WAV_BYTES = generate_alarm_wav()
+_ALARM_WAV_B64 = base64.b64encode(_ALARM_WAV_BYTES).decode()
 
 
-def audio_alarm_html() -> str:
+def audio_alarm_html(delay_seconds: int = 0) -> str:
     """
-    Returns an HTML snippet that plays a beep using the Web Audio API.
-    Generates a tone programmatically — no audio files needed.
-    Also attempts to play via data-URI as fallback.
+    Returns HTML/JS that plays a repeating beep alarm using the Web Audio API.
+    Pattern: 1s beep + 1s pause, repeated 5 times (10s total).
+    If *delay_seconds* > 0, the alarm starts after that delay (for testing).
+    Falls back to a data-URI WAV audio element.
     """
     return f"""
     <script>
       (function() {{
-        // Attempt 1: Web Audio API oscillator (works on most mobile browsers
-        // if the user has interacted with the page recently).
-        try {{
-          var AC = window.AudioContext || window.webkitAudioContext;
-          if (AC) {{
-            var ctx = new AC();
-            // Resume if suspended (common on mobile)
-            if (ctx.state === 'suspended') {{
-              ctx.resume();
-            }}
+        function playBeep(ctx, startTime) {{
+          for (var i = 0; i < 5; i++) {{
             var osc = ctx.createOscillator();
             osc.type = 'sine';
             osc.frequency.value = 880;
             var gain = ctx.createGain();
-            gain.gain.setValueAtTime(0.3, ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.7);
+            var t = startTime + i * 2;          // 2s cycle (1s on, 1s off)
+            gain.gain.setValueAtTime(0.3, t);
+            gain.gain.exponentialRampToValueAtTime(0.01, t + 0.9);
             osc.connect(gain);
             gain.connect(ctx.destination);
-            osc.start();
-            osc.stop(ctx.currentTime + 0.7);
-            return;
+            osc.start(t);
+            osc.stop(t + 0.9);
           }}
-        }} catch(e) {{
-          console.log('Web Audio failed, trying fallback', e);
         }}
 
-        // Attempt 2: data-URI audio element fallback
-        try {{
-          var audio = new Audio('data:audio/wav;base64,{_BEEP_WAV_B64}');
-          audio.volume = 0.5;
-          audio.play().catch(function(e2) {{
-            console.log('Audio fallback also failed', e2);
-          }});
-        }} catch(e2) {{
-          console.log('All audio methods failed', e2);
-        }}
+        setTimeout(function() {{
+          try {{
+            var AC = window.AudioContext || window.webkitAudioContext;
+            if (AC) {{
+              var ctx = new AC();
+              if (ctx.state === 'suspended') ctx.resume();
+              playBeep(ctx, ctx.currentTime);
+              return;
+            }}
+          }} catch(e) {{
+            console.log('Web Audio failed', e);
+          }}
+
+          // Fallback: data-URI audio
+          try {{
+            var audio = new Audio('data:audio/wav;base64,{_ALARM_WAV_B64}');
+            audio.volume = 0.5;
+            audio.play().catch(function() {{}});
+          }} catch(e2) {{
+            console.log('Audio fallback failed', e2);
+          }}
+        }}, {delay_seconds * 1000});
       }})();
     </script>
     """
 
 
-def play_beep_audio() -> None:
+def play_alarm_audio() -> None:
     """
-    Play the beep sound using st.audio (visible player) and also
-    inject the Web Audio API via HTML component.
+    Play the repeating alarm via visible st.audio player AND
+    inject the Web Audio API (auto-play attempt).
     """
-    # Visible audio player (user can tap play on mobile)
-    st.audio(_BEEP_WAV_BYTES, format='audio/wav')
-    # Also try in-page Web Audio API (auto-play attempt)
-    st.components.v1.html(audio_alarm_html(), height=0)
+    st.audio(_ALARM_WAV_BYTES, format='audio/wav')
+    st.components.v1.html(audio_alarm_html(delay_seconds=0), height=0)
 
 
 # ---------------------------------------------------------------------------
@@ -646,7 +659,7 @@ def render_dashboard() -> None:
 
             # Audio alarm 1 minute before end
             if should_alarm(name):
-                play_beep_audio()
+                play_alarm_audio()
         elif remaining is not None and remaining == 0:
             # Timer hit zero; auto-reset already happened above via auto_expire_timers
             st.info("⏰ Your break/lunch has ended. Returning to team status.")
@@ -725,13 +738,33 @@ def render_dashboard() -> None:
     # Test alarm button (temporary — for verifying audio on mobile)
     # -----------------------------------------------------------------------
     with st.expander("🔔 Test Alarm"):
-        st.caption("Tap the button below to test the alarm sound.")
-        if st.button("▶️ Play Alarm Test (10s)"):
-            # Show an audio player the user can tap
-            st.audio(_BEEP_WAV_BYTES, format='audio/wav')
-            st.info("🔊 Did you hear the beep? If not, check that your device is not on silent mode.")
-            # Also try Web Audio API silently
-            st.components.v1.html(audio_alarm_html(), height=0)
+        st.caption(
+            "Use this to verify the alarm sounds even when your phone is unattended "
+            "or the screen is off. The alarm plays (1s beep + 1s pause) × 5 = 10s."
+        )
+        delay = st.number_input(
+            "Delay before alarm (seconds)",
+            min_value=0,
+            max_value=120,
+            value=10,
+            step=5,
+            key="test_alarm_delay",
+        )
+        if st.button("⏰ Schedule Alarm Test", type="primary"):
+            st.info(
+                f"⏰ Alarm will sound in **{delay} seconds**. "
+                "Put your phone down now and wait for the beep."
+            )
+            # Use JS setTimeout for the delay (works even if page is in background)
+            st.components.v1.html(
+                audio_alarm_html(delay_seconds=delay),
+                height=0,
+            )
+            # Also show the audio player after the delay using meta refresh
+            st.markdown(
+                f'<meta http-equiv="refresh" content="{delay}">',
+                unsafe_allow_html=True,
+            )
 
 
 # ---------------------------------------------------------------------------
