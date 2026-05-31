@@ -22,10 +22,10 @@ TEAMS = ["Phone", "Chat", "Backoffice"]
 BREAK_DURATION_SEC = 15 * 60  # 15 minutes
 LUNCH_DURATION_SEC = 30 * 60  # 30 minutes
 
-# Per-team ratio limits (break/lunch fraction of active members, rounded up).
-# Example: Phone with 3 active → ceil(3 * 0.50) = 2 max on break/lunch.
-TEAM_BREAK_RATIOS = {"Phone": 0.50, "Chat": 0.65, "Backoffice": 0.50}
-TEAM_LUNCH_RATIOS = {"Phone": 0.50, "Chat": 0.65, "Backoffice": 0.50}
+# Per-team combined ratio limit (break + lunch fraction of active members, rounded up).
+# The count of people on break AND lunch combined cannot exceed ceil(active × ratio).
+# Example: Chat with 5 active → ceil(5 × 0.65) = 4 max on break+lunch combined.
+TEAM_COMBINED_RATIOS = {"Phone": 0.50, "Chat": 0.65, "Backoffice": 0.50}
 ALARM_BEFORE_SEC = 60  # Sound alarm 60 s before end
 REFRESH_INTERVAL_MS = 5000  # Auto-refresh every 5 seconds
 DB_PATH = "break_tracker.db"
@@ -440,13 +440,12 @@ def render_dashboard() -> None:
     break_count = my_team_counts["break"]
     lunch_count = my_team_counts["lunch"]
 
-    # Compute per-team ratio limits (rounded up via ceil)
-    break_ratio = TEAM_BREAK_RATIOS.get(team, 0.50)
-    lunch_ratio = TEAM_LUNCH_RATIOS.get(team, 0.50)
-    break_max = math.ceil(active_total * break_ratio) if active_total > 0 else 0
-    lunch_max = math.ceil(active_total * lunch_ratio) if active_total > 0 else 0
-    break_full = active_total > 0 and break_count >= break_max
-    lunch_full = active_total > 0 and lunch_count >= lunch_max
+    # Compute combined break+lunch limit (rounded up via ceil)
+    combined_ratio = TEAM_COMBINED_RATIOS.get(team, 0.50)
+    combined_max = math.ceil(active_total * combined_ratio) if active_total > 0 else 0
+    combined_now = break_count + lunch_count
+    break_full = active_total > 0 and combined_now >= combined_max
+    lunch_full = active_total > 0 and combined_now >= combined_max
 
     # -----------------------------------------------------------------------
     # Status buttons with live counts (4 columns)
@@ -477,7 +476,7 @@ def render_dashboard() -> None:
         )
         break_help = None
         if current_status == "team" and break_full:
-            break_help = f"⚠️ Too many on break. Please wait (max {break_max})."
+            break_help = f"⚠️ Too many on break/lunch. Please wait (max {combined_max} combined)."
         if st.button(
             "Break",
             key="btn_break",
@@ -503,7 +502,7 @@ def render_dashboard() -> None:
         )
         lunch_help = None
         if current_status == "team" and lunch_full:
-            lunch_help = f"⚠️ Too many on lunch. Please wait (max {lunch_max})."
+            lunch_help = f"⚠️ Too many on break/lunch. Please wait (max {combined_max} combined)."
         if st.button(
             "Lunch",
             key="btn_lunch",
