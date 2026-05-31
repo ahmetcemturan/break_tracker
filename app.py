@@ -237,15 +237,12 @@ def should_alarm(name: str) -> bool:
     remaining = compute_remaining(name)
     if remaining is None:
         return False
-    # Trigger when remaining is between 1 and ALARM_BEFORE_SEC seconds
-    # Use a session-state flag to avoid repeated alarms on every refresh
     alarm_key = f"alarmed_{name}"
     if 0 < remaining <= ALARM_BEFORE_SEC:
         if not st.session_state.get(alarm_key, False):
             st.session_state[alarm_key] = True
             return True
     else:
-        # Reset the flag when we're outside the alarm window
         st.session_state[alarm_key] = False
     return False
 
@@ -316,7 +313,6 @@ def audio_alarm_html(delay_seconds: int = 0) -> str:
     """
     Returns HTML/JS that plays a repeating beep alarm using the Web Audio API.
     Pattern: 1s beep + 1s pause, repeated 5 times (10s total).
-    If *delay_seconds* > 0, the alarm starts after that delay (for testing).
     Falls back to a data-URI WAV audio element.
     """
     return f"""
@@ -328,7 +324,7 @@ def audio_alarm_html(delay_seconds: int = 0) -> str:
             osc.type = 'sine';
             osc.frequency.value = 880;
             var gain = ctx.createGain();
-            var t = startTime + i * 2;          // 2s cycle (1s on, 1s off)
+            var t = startTime + i * 2;
             gain.gain.setValueAtTime(0.3, t);
             gain.gain.exponentialRampToValueAtTime(0.01, t + 0.9);
             osc.connect(gain);
@@ -351,7 +347,6 @@ def audio_alarm_html(delay_seconds: int = 0) -> str:
             console.log('Web Audio failed', e);
           }}
 
-          // Fallback: data-URI audio
           try {{
             var audio = new Audio('data:audio/wav;base64,{_ALARM_WAV_B64}');
             audio.volume = 0.5;
@@ -366,10 +361,7 @@ def audio_alarm_html(delay_seconds: int = 0) -> str:
 
 
 def play_alarm_audio() -> None:
-    """
-    Play the repeating alarm via visible st.audio player AND
-    inject the Web Audio API (auto-play attempt).
-    """
+    """Play the repeating alarm via visible st.audio player AND Web Audio API."""
     st.audio(_ALARM_WAV_BYTES, format='audio/wav')
     st.components.v1.html(audio_alarm_html(delay_seconds=0), height=0)
 
@@ -442,7 +434,9 @@ def render_login() -> None:
             return
         add_user(name, team, pin)
         st.session_state.current_user = name
-        st.session_state.alarmed = {}  # reset alarm flags
+        st.session_state.alarmed = {}
+        # Persist in URL for recovery after page refresh
+        st.query_params["user"] = name
         st.rerun()
 
     # -----------------------------------------------------------------------
@@ -474,6 +468,7 @@ def render_login() -> None:
         elif verify_pin(restore_name.strip(), restore_pin):
             st.session_state.current_user = restore_name.strip()
             st.session_state[f"alarmed_{restore_name.strip()}"] = False
+            st.query_params["user"] = restore_name.strip()
             st.rerun()
         else:
             st.error("Incorrect PIN. Try again.")
@@ -513,17 +508,22 @@ def render_dashboard() -> None:
     user = get_user(name)
 
     if user is None:
-        # User was deleted (e.g. signed off in another tab)
         st.session_state.current_user = None
+        if "user" in st.query_params:
+            del st.query_params["user"]
         st.rerun()
 
     # Auto-expire any finished timers before rendering
     auto_expire_timers()
-    # Refresh user after potential auto-expire
     user = get_user(name)
     if user is None:
         st.session_state.current_user = None
+        if "user" in st.query_params:
+            del st.query_params["user"]
         st.rerun()
+
+    # Keep the URL param current (helps recovery after hard reload)
+    st.query_params["user"] = name
 
     team = user["team"]
     current_status = user["status"]
@@ -539,7 +539,7 @@ def render_dashboard() -> None:
     break_count = my_team_counts["break"]
     lunch_count = my_team_counts["lunch"]
 
-    # Compute combined break+lunch limit (rounded up via ceil)
+    # Compute per-team ratio limits (rounded up via ceil)
     combined_ratio = TEAM_COMBINED_RATIOS.get(team, 0.50)
     combined_max = math.ceil(active_total * combined_ratio) if active_total > 0 else 0
     combined_now = break_count + lunch_count
@@ -585,7 +585,6 @@ def render_dashboard() -> None:
         ):
             now_iso = utcnow().isoformat()
             update_status(name, "break", now_iso, BREAK_DURATION_SEC)
-            # Reset alarm flag for this user
             st.session_state[f"alarmed_{name}"] = False
             st.rerun()
         if break_help and current_status == "team":
@@ -626,10 +625,12 @@ def render_dashboard() -> None:
         ):
             delete_user(name)
             st.session_state.current_user = None
+            if "user" in st.query_params:
+                del st.query_params["user"]
             st.rerun()
 
     # -----------------------------------------------------------------------
-    # Countdown timer display
+    # Countdown timer display + alarm
     # -----------------------------------------------------------------------
     if current_status in ("break", "lunch"):
         remaining = compute_remaining(name)
@@ -637,7 +638,7 @@ def render_dashboard() -> None:
             mins, secs = divmod(remaining, 60)
             timer_label = "Break" if current_status == "break" else "Lunch"
 
-            # Determine urgency style
+            # Urgency styling in last 60 seconds
             is_last_minute = remaining <= 60
             bg = "#fff3cd" if is_last_minute else "#f0f2f6"
             border = "2px solid #dc3545" if is_last_minute else "none"
@@ -664,17 +665,13 @@ def render_dashboard() -> None:
             )
 
             # Show a playable audio player during the last 60 seconds
-            # (user can tap it on mobile — no autoplay needed)
-            if remaining > 0 and remaining <= 60:
-                st.warning("🔊 **Alarm active!** Tap play below or ensure your sound is on.")
+            if is_last_minute:
+                st.warning("🔊 **Alarm active!** Tap play below.")
                 st.audio(_ALARM_WAV_BYTES, format='audio/wav')
-                # Also try Web Audio API (may work on some mobile browsers)
-                st.components.v1.html(audio_alarm_html(delay_seconds=0), height=0)
 
-            # Also trigger the repeating alarm once at the 1-minute mark
+            # Fire the Web Audio API alarm once at the 1-minute mark
             if should_alarm(name):
                 st.components.v1.html(audio_alarm_html(delay_seconds=0), height=0)
-
 
     # -----------------------------------------------------------------------
     # Personnel table
@@ -741,8 +738,9 @@ def render_dashboard() -> None:
                 if st.button("Remove Selected User", type="secondary"):
                     delete_user(remove_name)
                     if remove_name == name:
-                        # If admin removes themselves, redirect to login
                         st.session_state.current_user = None
+                        if "user" in st.query_params:
+                            del st.query_params["user"]
                     st.rerun()
 
     # -----------------------------------------------------------------------
@@ -766,15 +764,9 @@ def render_dashboard() -> None:
                 f"⏰ Alarm will sound in **{delay} seconds**. "
                 "Put your phone down now and wait for the beep."
             )
-            # Use JS setTimeout for the delay (works even if page is in background)
             st.components.v1.html(
                 audio_alarm_html(delay_seconds=delay),
                 height=0,
-            )
-            # Also show the audio player after the delay using meta refresh
-            st.markdown(
-                f'<meta http-equiv="refresh" content="{delay}">',
-                unsafe_allow_html=True,
             )
 
 
@@ -789,11 +781,23 @@ def main() -> None:
     # Auto-refresh the page every REFRESH_INTERVAL_MS
     st_autorefresh(interval=REFRESH_INTERVAL_MS, key="autorefresh")
 
-    # Session restoration: if the user's name is stored in session state, use it.
-    # This persists across re-renders within the same browser tab.
-    if st.session_state.get("current_user"):
+    # Persistent session recovery: even if st.session_state is lost
+    # (hard page refresh on mobile), the user's name is in the URL.
+    current_user = st.session_state.get("current_user")
+
+    if current_user is None or not is_name_active(current_user):
+        # Try to recover from URL params
+        url_user = st.query_params.get("user")
+        if url_user and is_name_active(url_user):
+            st.session_state.current_user = url_user
+            current_user = url_user
+
+    if current_user and is_name_active(current_user):
         render_dashboard()
     else:
+        # Clear stale URL param
+        if "user" in st.query_params:
+            del st.query_params["user"]
         render_login()
 
 
