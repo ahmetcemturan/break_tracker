@@ -1,0 +1,30 @@
+# Streamlit Break Tracker
+
+# Database (auto-created at runtime)
+break_tracker.db
+break_tracker.db-wal
+break_tracker.db-shm
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
