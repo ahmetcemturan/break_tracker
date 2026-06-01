@@ -317,6 +317,8 @@ def alarm_js(delay_seconds: int = 0) -> str:
        – Android Chrome/Firefox: works from any tab
        – iOS: requires PWA added to Home Screen (iOS 16.4+)
     2. **Web Audio API** oscillator (5× repeating beep, for foreground use)
+       – Uses a global AudioContext (created once, reused) so it survives refreshes
+       – Properly awaits `ctx.resume()` so oscillators play even when autoplay-blocked
     3. **data-URI audio** fallback if Web Audio is unavailable
 
     The alarm repeats 5 times: 1s beep + 1s pause = 10s total.
@@ -325,38 +327,59 @@ def alarm_js(delay_seconds: int = 0) -> str:
     <div id="_alarm_container"></div>
     <script>
       (function() {{
-        /* ---- request notification permission once ---- */
-        if (!window._alarm_permission_requested) {{
-          window._alarm_permission_requested = true;
-          if ('Notification' in window && Notification.permission === 'default') {{
+        /* Use the parent window for persistent state that survives iframe recreation.
+           This way the AudioContext and notification permission flag are kept
+           even when Streamlit re-renders the component on every auto-refresh. */
+        var W = window.parent;
+
+        /* ---- request notification permission once (permanent across iframes) ---- */
+        if (!W._alarm_permission_requested) {{
+          W._alarm_permission_requested = true;
+          if ('Notification' in W && Notification.permission === 'default') {{
             Notification.requestPermission();
           }}
         }}
 
+        /* ---- global AudioContext stored on parent window (survives iframe reload) ---- */
+        if (!W._alarm_ctx) {{
+          try {{
+            var AC = W.AudioContext || W.webkitAudioContext;
+            if (AC) W._alarm_ctx = new AC();
+          }} catch(e) {{ W._alarm_ctx = null; }}
+        }}
+
         /* ---- play the 5× repeating beep via Web Audio ---- */
         function playBeeps() {{
-          try {{
-            var AC = window.AudioContext || window.webkitAudioContext;
-            if (!AC) throw 'No AudioContext';
-            var ctx = new AC();
-            if (ctx.state === 'suspended') ctx.resume();
-            for (var i = 0; i < 5; i++) {{
-              var osc = ctx.createOscillator();
-              osc.type = 'sine';
-              osc.frequency.value = 880;
-              var gain = ctx.createGain();
-              var t = ctx.currentTime + i * 2;
-              gain.gain.setValueAtTime(0.3, t);
-              gain.gain.exponentialRampToValueAtTime(0.01, t + 0.9);
-              osc.connect(gain);
-              gain.connect(ctx.destination);
-              osc.start(t);
-              osc.stop(t + 0.9);
-            }}
+          var ctx = W._alarm_ctx;
+          if (ctx) {{
+            var resume = (ctx.state === 'suspended') ? ctx.resume() : Promise.resolve();
+            resume.then(function() {{
+              try {{
+                for (var i = 0; i < 5; i++) {{
+                  var osc = ctx.createOscillator();
+                  osc.type = 'sine';
+                  osc.frequency.value = 880;
+                  var gain = ctx.createGain();
+                  var t = ctx.currentTime + i * 2;
+                  gain.gain.setValueAtTime(0.3, t);
+                  gain.gain.exponentialRampToValueAtTime(0.01, t + 0.9);
+                  osc.connect(gain);
+                  gain.connect(ctx.destination);
+                  osc.start(t);
+                  osc.stop(t + 0.9);
+                }}
+                return;
+              }} catch(e) {{}}
+            }}).catch(function() {{
+              /* resume rejected — fall through to data-URI */
+              dataUriFallback();
+            }});
             return;
-          }} catch(e) {{}}
+          }}
+          dataUriFallback();
+        }}
 
-          /* fallback: data-URI audio */
+        function dataUriFallback() {{
           try {{
             var a = new Audio('data:audio/wav;base64,{_ALARM_WAV_B64}');
             a.volume = 0.5;
@@ -367,7 +390,7 @@ def alarm_js(delay_seconds: int = 0) -> str:
         /* ---- fire alarm after delay ---- */
         setTimeout(function() {{
           /* 1. System notification (sound guaranteed on Android) */
-          if ('Notification' in window && Notification.permission === 'granted') {{
+          if ('Notification' in W && Notification.permission === 'granted') {{
             try {{
               new Notification('⏰ Break Tracker', {{
                 body: 'Break/lunch time is over!',
@@ -390,9 +413,17 @@ def fire_alarm() -> None:
     Fire the alarm using:
     - A visible st.audio() player (user can tap play on mobile)
     - The notification + audio JS component (screen-off, background tab)
+
+    Appends a unique counter as an HTML comment so the string changes
+    every call, forcing Streamlit to re‑render the iframe.
     """
     st.audio(_ALARM_WAV_BYTES, format='audio/wav')
-    st.components.v1.html(alarm_js(delay_seconds=0), height=0)
+    st.session_state._alarm_count = st.session_state.get("_alarm_count", 0) + 1
+    # Unique trailing comment guarantees the HTML differs each time,
+    # which prevents Streamlit from reusing the previous iframe.
+    html = alarm_js(delay_seconds=0)
+    html += f"\n<!-- fire #{st.session_state._alarm_count} -->\n"
+    st.components.v1.html(html, height=0)
 
 
 # ---------------------------------------------------------------------------
@@ -693,15 +724,18 @@ def render_dashboard() -> None:
                 unsafe_allow_html=True,
             )
 
-            # Show a playable audio player during the last 60 seconds
+            # Show the alarm warning + audio player during the last 60 seconds.
+            # The JS component (notification + beeps) fires only once via should_alarm,
+            # while the visible st.audio() player stays available every refresh.
             if is_last_minute:
-                # Visible audio player + notification + beeps
                 st.warning("🔊 **Alarm active!**")
-                fire_alarm()
 
-            # Fire alarm once when entering the 1-minute window
-            if should_alarm(name):
-                fire_alarm()
+                # Fire the JS + audio alarm once on entry into the window
+                if should_alarm(name):
+                    fire_alarm()
+                else:
+                    # Keep a visible audio player for manual play
+                    st.audio(_ALARM_WAV_BYTES, format="audio/wav")
 
     # -----------------------------------------------------------------------
     # Personnel table
@@ -772,33 +806,6 @@ def render_dashboard() -> None:
                         if "user" in st.query_params:
                             del st.query_params["user"]
                     st.rerun()
-
-    # -----------------------------------------------------------------------
-    # Test alarm button (temporary — for verifying audio on mobile)
-    # -----------------------------------------------------------------------
-    with st.expander("🔔 Test Alarm"):
-        st.caption(
-            "Use this to verify the alarm sounds even when your phone is unattended "
-            "or the screen is off. The alarm plays (1s beep + 1s pause) × 5 = 10s."
-        )
-        delay = st.number_input(
-            "Delay before alarm (seconds)",
-            min_value=0,
-            max_value=120,
-            value=10,
-            step=5,
-            key="test_alarm_delay",
-        )
-        if st.button("⏰ Schedule Alarm Test", type="primary"):
-            st.info(
-                f"⏰ Alarm will sound in **{delay} seconds**. "
-                "Put your phone down now and wait for the beep."
-            )
-            st.components.v1.html(
-                alarm_js(delay_seconds=delay),
-                height=0,
-            )
-
 
 # ---------------------------------------------------------------------------
 # Main entry point
