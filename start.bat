@@ -1,11 +1,11 @@
 @echo off
-title Break Tracker
+title Pausen-Tracker
 echo ============================================
-echo   🔧 Break Tracker - Starting...
+echo   🔧 Pausen-Tracker - Wird gestartet...
 echo ============================================
 echo.
 
-REM Locate Python with streamlit installed (prefer Microsoft Store Python)
+REM Python mit installiertem Streamlit finden (Microsoft Store Python bevorzugen)
 set PYTHON_CMD=python
 where python 2>nul | findstr /V /C:"msys64" /C:"Inkscape" >nul
 if %ERRORLEVEL% EQU 0 (
@@ -18,7 +18,7 @@ if %ERRORLEVEL% EQU 0 (
     )
 )
 
-REM Fallback: check WindowsApps path (Microsoft Store Python)
+REM Fallback: WindowsApps-Pfad prüfen (Microsoft Store Python)
 set "WINAPPS=%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe"
 if exist "%WINAPPS%" (
     "%WINAPPS%" -c "import streamlit" 2>nul
@@ -28,7 +28,7 @@ if exist "%WINAPPS%" (
     )
 )
 
-REM Fallback: check Pythoncore path
+REM Fallback: Pythoncore-Pfad prüfen
 set "PYCOREDIR=%LOCALAPPDATA%\Python"
 if exist "%PYCOREDIR%" (
     for /r "%PYCOREDIR%" %%f in (python.exe) do (
@@ -41,14 +41,14 @@ if exist "%PYCOREDIR%" (
 )
 
 :found
-echo [OK] Using: %PYTHON_CMD%
+echo [OK] Verwende: %PYTHON_CMD%
 %PYTHON_CMD% --version
 echo.
-echo [OK] Starting server at http://localhost:8501
+echo [OK] Server wird gestartet unter http://localhost:8501
 echo.
 %PYTHON_CMD% -m streamlit run app.py
 if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Streamlit exited with error code %ERRORLEVEL%.
+    echo [FEHLER] Streamlit wurde mit Fehlercode %ERRORLEVEL% beendet.
     pause
 )
 

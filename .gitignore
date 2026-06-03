@@ -1,9 +1,12 @@
-# Streamlit Break Tracker
+# Streamlit Pausen-Tracker
 
-# Database (auto-created at runtime)
+# Datenbank (automatisch zur Laufzeit erstellt)
 break_tracker.db
 break_tracker.db-wal
 break_tracker.db-shm
+
+# Alarm-HTML (automatisch generiert, nicht committen)
+_alarm.html
 
 # Python
 __pycache__/
@@ -14,7 +17,7 @@ dist/
 build/
 .eggs/
 
-# Environment
+# Umgebung
 .env
 .venv/
 venv/
